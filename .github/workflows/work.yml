@@ -140,50 +140,58 @@ jobs:
           test -f reldl/image.img
           ls -lh reldl
 
-      # ===== 安装 BaiduPCS-Go（兼容不同版本包名/目录结构）=====
+      # ===== 安装 BaiduPCS-Go（固定放到仓库根目录 ./BaiduPCS-Go）=====
       - name: Install BaiduPCS-Go
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euxo pipefail
-          mkdir -p bpcs
-          # 下载 linux-amd64 包（zip 或 tar.gz 均可）
-          gh release download -R qjfoidnh/BaiduPCS-Go -p '*linux-amd64*.zip' -D bpcs || true
-          gh release download -R qjfoidnh/BaiduPCS-Go -p '*linux-amd64*.tar.gz' -D bpcs || true
-          # 解压
-          if ls bpcs/*.zip 1>/dev/null 2>&1; then
-            unzip -q bpcs/*.zip -d bpcs
-          fi
-          if ls bpcs/*.tar.gz 1>/dev/null 2>&1; then
-            tar -xzf bpcs/*.tar.gz -C bpcs
-          fi
-          # 找到可执行文件并做固定链接
-          BIN="$(find bpcs -type f -name 'BaiduPCS-Go' | head -n 1 || true)"
-          if [ -z "$BIN" ]; then
-            echo "❌ 未找到 BaiduPCS-Go 可执行文件"; ls -R bpcs; exit 1
-          fi
-          chmod +x "$BIN"
-          ln -sf "$BIN" bpcs/BaiduPCS-Go
-          bpcs/BaiduPCS-Go version || true
+          WORKDIR="${GITHUB_WORKSPACE}"
+          mkdir -p "$WORKDIR/bpcs"
 
-      # ===== 用完整 BAIDU_COOKIE 登录并上传到百度网盘 =====
+          # 下载 linux-amd64 包（zip 或 tar.gz 二选一，哪个能下成功就用哪个）
+          gh release download -R qjfoidnh/BaiduPCS-Go -p '*linux-amd64*.zip' -D "$WORKDIR/bpcs" || true
+          gh release download -R qjfoidnh/BaiduPCS-Go -p '*linux-amd64*.tar.gz' -D "$WORKDIR/bpcs" || true
+
+          # 解压
+          if ls "$WORKDIR"/bpcs/*.zip 1>/dev/null 2>&1; then
+            unzip -q "$WORKDIR"/bpcs/*.zip -d "$WORKDIR/bpcs"
+          fi
+          if ls "$WORKDIR"/bpcs/*.tar.gz 1>/dev/null 2>&1; then
+            tar -xzf "$WORKDIR"/bpcs/*.tar.gz -C "$WORKDIR/bpcs"
+          fi
+
+          # 找到可执行文件并复制到仓库根目录，固定命名
+          BIN="$(find "$WORKDIR/bpcs" -type f -name 'BaiduPCS-Go' | head -n 1 || true)"
+          if [ -z "$BIN" ]; then
+            echo "❌ 未找到 BaiduPCS-Go 可执行文件"; ls -R "$WORKDIR/bpcs"; exit 1
+          fi
+          cp "$BIN" "$WORKDIR/BaiduPCS-Go"
+          chmod +x "$WORKDIR/BaiduPCS-Go"
+          "$WORKDIR/BaiduPCS-Go" version || true
+
+      # ===== 用完整 BAIDU_COOKIE 登录 =====
       - name: Login BaiduPCS-Go (with cookie)
         env:
           BAIDU_COOKIE: ${{ secrets.BAIDU_COOKIE }}
         run: |
           set -euxo pipefail
+          cd "${GITHUB_WORKSPACE}"
+          test -x ./BaiduPCS-Go || { echo "❌ ./BaiduPCS-Go 不存在或不可执行"; ls -lh ./; exit 1; }
           if [ -z "${BAIDU_COOKIE:-}" ]; then
             echo "❌ 缺少百度网盘 Cookie：请在仓库 Secrets 配置 BAIDU_COOKIE"; exit 1;
           fi
-          bpcs/BaiduPCS-Go login -cookie="${BAIDU_COOKIE}"
-          bpcs/BaiduPCS-Go who
+          ./BaiduPCS-Go login -cookie="${BAIDU_COOKIE}"
+          ./BaiduPCS-Go who
 
+      # ===== 上传到百度网盘 =====
       - name: Upload image to Baidu Netdisk
         env:
           BAIDU_PATH: ${{ inputs.baidu_path }}
         run: |
           set -euxo pipefail
+          cd "${GITHUB_WORKSPACE}"
           REMOTE="${BAIDU_PATH:-/knulli_mod/}"
-          bpcs/BaiduPCS-Go mkdir "$REMOTE" || true
-          bpcs/BaiduPCS-Go upload reldl/image.img "$REMOTE"
-          bpcs/BaiduPCS-Go ls "$REMOTE"
+          ./BaiduPCS-Go mkdir "$REMOTE" || true
+          ./BaiduPCS-Go upload reldl/image.img "$REMOTE"
+          ./BaiduPCS-Go ls "$REMOTE"
