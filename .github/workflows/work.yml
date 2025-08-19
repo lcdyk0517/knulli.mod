@@ -51,12 +51,12 @@ jobs:
           echo "image_path=image.img" >> "$GITHUB_OUTPUT"
 
       - name: Make mod script executable
-        run: chmod +x ./mod_knulli_from_img.sh
+        run: chmod +x ./mod.sh
 
       - name: Run mod script
         # 如果你的脚本里带了默认 MOD_URL，就无需再传 -u
         run: |
-          sudo ./mod_knulli_from_img.sh "${{ steps.dl.outputs.image_path }}"
+          sudo ./mod.sh "${{ steps.dl.outputs.image_path }}"
 
       - name: Generate checksums
         run: |
