@@ -181,7 +181,7 @@ jobs:
           if [ -z "${BAIDU_COOKIE:-}" ]; then
             echo "❌ 缺少百度网盘 Cookie：请在仓库 Secrets 配置 BAIDU_COOKIE"; exit 1;
           fi
-          ./BaiduPCS-Go login -cookie="${BAIDU_COOKIE}"
+          ./BaiduPCS-Go login -cookies="${BAIDU_COOKIE}"
           ./BaiduPCS-Go who
 
       # ===== 上传到百度网盘 =====
