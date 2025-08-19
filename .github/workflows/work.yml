@@ -1,4 +1,4 @@
-name: Batocera Mod & Release
+name: Batocera Mod → Release → Baidu Netdisk
 
 on:
   workflow_dispatch:
@@ -16,31 +16,32 @@ on:
         required: false
         default: false
         type: boolean
+      baidu_path:
+        description: "百度网盘上传目录（默认：/knulli_mod/）"
+        required: false
+        type: string
 
 permissions:
-  contents: write   # 上传 Release 需要
+  contents: write   # 创建/更新 Release 需要
 
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
           sudo apt-get update
-          # losetup/mount/umount 属于 util-linux/mount，runner 自带；安装其他依赖
           sudo apt-get install -y squashfs-tools unzip xz-utils curl coreutils gzip
 
       - name: Download image
         id: dl
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           URL="${{ inputs.image_url }}"
           echo "Downloading: $URL"
           curl -L --fail -o input.img.any "$URL"
-          # 判断是否为 .gz（根据响应的 URL 或文件头）
           if [[ "$URL" =~ \.gz($|\?) ]] || file input.img.any | grep -qi "gzip compressed data"; then
             echo "Detected gzip archive, decompressing..."
             gunzip -c input.img.any > image.img
@@ -51,24 +52,20 @@ jobs:
           echo "image_path=image.img" >> "$GITHUB_OUTPUT"
 
       - name: Make mod script executable
-        run: chmod +x ./mod.sh
+        run: chmod +x ./mod_knulli_from_img.sh
 
       - name: Run mod script
-        # 如果你的脚本里带了默认 MOD_URL，就无需再传 -u
-        run: |
-          sudo ./mod.sh "${{ steps.dl.outputs.image_path }}"
+        run: sudo ./mod_knulli_from_img.sh "${{ steps.dl.outputs.image_path }}"
 
       - name: Generate checksums
-        run: |
-          sha256sum image.img | tee image.img.sha256
+        run: sha256sum image.img | tee image.img.sha256
 
-      - name: Decide split or single
+      - name: Check file size
         id: sizecheck
         run: |
-          set -euo pipefail
           BYTES=$(stat -c%s image.img)
-          echo "File size: $BYTES bytes"
-          THRESH=$((2*1024*1024*1024))  # 2 GiB
+          echo "File size: $BYTES"
+          THRESH=$((2*1024*1024*1024))
           if [ "$BYTES" -gt "$THRESH" ]; then
             echo "need_split=true" >> "$GITHUB_OUTPUT"
           else
@@ -78,31 +75,28 @@ jobs:
       - name: Split into 2GiB parts (if needed)
         if: steps.sizecheck.outputs.need_split == 'true'
         run: |
-          # 以 2000MiB 切分（兼顾余量），数字后缀，宽度2位：.part00、.part01...
           split -b 2000m -d -a 2 image.img image.img.part.
-          # 对每个分卷生成校验
           for f in image.img.part.*; do
             sha256sum "$f" >> image.img.parts.sha256
           done
           ls -lh image.img.part.* image.img.parts.sha256
 
-      - name: Prepare release tag/name
+      - name: Prepare release tag
         id: tag
         run: |
-          # 自动生成一个 tag（可被 inputs.release_tag 覆盖）
           DATE=$(date -u +%Y%m%d-%H%M%S)
           AUTO_TAG="knulli-mod-${DATE}-${GITHUB_RUN_ID}"
           TAG="${{ inputs.release_tag }}"
           if [ -z "$TAG" ]; then TAG="$AUTO_TAG"; fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "release_name=Batocera Mod $TAG" >> "$GITHUB_OUTPUT"
+          echo "name=Batocera Mod $TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Upload single file to Release
+      - name: Upload to Release (single)
         if: steps.sizecheck.outputs.need_split == 'false'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
-          name: ${{ steps.tag.outputs.release_name }}
+          name: ${{ steps.tag.outputs.name }}
           prerelease: ${{ inputs.prerelease }}
           generate_release_notes: true
           files: |
@@ -111,12 +105,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload split parts to Release
+      - name: Upload to Release (split parts)
         if: steps.sizecheck.outputs.need_split == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
-          name: ${{ steps.tag.outputs.release_name }}
+          name: ${{ steps.tag.outputs.name }}
           prerelease: ${{ inputs.prerelease }}
           generate_release_notes: true
           files: |
@@ -124,3 +118,52 @@ jobs:
             image.img.parts.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ===== 新增：从 Release 下载回来并合并为单个镜像 =====
+      - name: Download assets back from Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euxo pipefail
+          mkdir -p reldl
+          gh release download "${{ steps.tag.outputs.tag }}" --dir reldl --pattern "image.img" || true
+          gh release download "${{ steps.tag.outputs.tag }}" --dir reldl --pattern "image.img.part.*" || true
+          if ls reldl/image.img.part.* 1>/dev/null 2>&1; then
+            echo "Reassembling split parts..."
+            cat reldl/image.img.part.* > reldl/image.img
+          fi
+          ls -lh reldl
+
+      # ===== 安装并登录 BaiduPCS-Go，上传到百度网盘 =====
+      - name: Install BaiduPCS-Go
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euxo pipefail
+          mkdir -p bpcs
+          gh release download -R qjfoidnh/BaiduPCS-Go -p '*linux-amd64*.zip' -D bpcs
+          unzip -q bpcs/*.zip -d bpcs
+          chmod +x bpcs/BaiduPCS-Go
+          ./bpcs/BaiduPCS-Go version || true
+
+      - name: Login BaiduPCS-Go (with cookie)
+        env:
+          BAIDU_COOKIE: ${{ secrets.BAIDU_COOKIE }}
+        run: |
+          set -euxo pipefail
+          if [ -z "${BAIDU_COOKIE:-}" ]; then
+            echo "❌ 缺少百度网盘 Cookie：请在仓库 Secrets 配置 BAIDU_COOKIE"; exit 1;
+          fi
+          ./bpcs/BaiduPCS-Go login -cookie="${BAIDU_COOKIE}"
+          ./bpcs/BaiduPCS-Go who
+
+      - name: Upload image to Baidu Netdisk
+        env:
+          BAIDU_PATH: ${{ inputs.baidu_path }}
+        run: |
+          set -euxo pipefail
+          REMOTE="${BAIDU_PATH:-/knulli_mod/}"
+          ./bpcs/BaiduPCS-Go mkdir "$REMOTE" || true
+          ./bpcs/BaiduPCS-Go upload reldl/image.img "$REMOTE"
+          ./bpcs/BaiduPCS-Go ls "$REMOTE"
+
