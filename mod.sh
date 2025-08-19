@@ -78,8 +78,8 @@ mkdir -p "$MOD_DIR"
 
 if [[ -n "$MOD_URL" ]]; then
   echo "⬇️ 下载 mod 包：$MOD_URL"
-  curl -L --fail -o "$WORKROOT/mod_download" "$MOD_URL"
-  MOD_ARCHIVE="$WORKROOT/mod_download"
+  curl -L --fail -o "$WORKROOT/mod_files.zip" "$MOD_URL"
+  MOD_ARCHIVE="$WORKROOT/mod_files.zip"
 fi
 
 # 若脚本同目录已有 mod_files 目录，也可直接用
