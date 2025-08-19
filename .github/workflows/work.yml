@@ -1,0 +1,126 @@
+name: Batocera Mod & Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_url:
+        description: "待魔改镜像直链（支持 .img 或 .img.gz）"
+        required: true
+        type: string
+      release_tag:
+        description: "Release tag（留空则自动生成）"
+        required: false
+        type: string
+      prerelease:
+        description: "是否标记为 Pre-release"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write   # 上传 Release 需要
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          # losetup/mount/umount 属于 util-linux/mount，runner 自带；安装其他依赖
+          sudo apt-get install -y squashfs-tools unzip xz-utils curl coreutils gzip
+
+      - name: Download image
+        id: dl
+        run: |
+          set -euo pipefail
+          URL="${{ inputs.image_url }}"
+          echo "Downloading: $URL"
+          curl -L --fail -o input.img.any "$URL"
+          # 判断是否为 .gz（根据响应的 URL 或文件头）
+          if [[ "$URL" =~ \.gz($|\?) ]] || file input.img.any | grep -qi "gzip compressed data"; then
+            echo "Detected gzip archive, decompressing..."
+            gunzip -c input.img.any > image.img
+          else
+            mv input.img.any image.img
+          fi
+          ls -lh image.img
+          echo "image_path=image.img" >> "$GITHUB_OUTPUT"
+
+      - name: Make mod script executable
+        run: chmod +x ./mod_knulli_from_img.sh
+
+      - name: Run mod script
+        # 如果你的脚本里带了默认 MOD_URL，就无需再传 -u
+        run: |
+          sudo ./mod_knulli_from_img.sh "${{ steps.dl.outputs.image_path }}"
+
+      - name: Generate checksums
+        run: |
+          sha256sum image.img | tee image.img.sha256
+
+      - name: Decide split or single
+        id: sizecheck
+        run: |
+          set -euo pipefail
+          BYTES=$(stat -c%s image.img)
+          echo "File size: $BYTES bytes"
+          THRESH=$((2*1024*1024*1024))  # 2 GiB
+          if [ "$BYTES" -gt "$THRESH" ]; then
+            echo "need_split=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "need_split=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Split into 2GiB parts (if needed)
+        if: steps.sizecheck.outputs.need_split == 'true'
+        run: |
+          # 以 2000MiB 切分（兼顾余量），数字后缀，宽度2位：.part00、.part01...
+          split -b 2000m -d -a 2 image.img image.img.part.
+          # 对每个分卷生成校验
+          for f in image.img.part.*; do
+            sha256sum "$f" >> image.img.parts.sha256
+          done
+          ls -lh image.img.part.* image.img.parts.sha256
+
+      - name: Prepare release tag/name
+        id: tag
+        run: |
+          # 自动生成一个 tag（可被 inputs.release_tag 覆盖）
+          DATE=$(date -u +%Y%m%d-%H%M%S)
+          AUTO_TAG="knulli-mod-${DATE}-${GITHUB_RUN_ID}"
+          TAG="${{ inputs.release_tag }}"
+          if [ -z "$TAG" ]; then TAG="$AUTO_TAG"; fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "release_name=Batocera Mod $TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Upload single file to Release
+        if: steps.sizecheck.outputs.need_split == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.release_name }}
+          prerelease: ${{ inputs.prerelease }}
+          generate_release_notes: true
+          files: |
+            image.img
+            image.img.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload split parts to Release
+        if: steps.sizecheck.outputs.need_split == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.release_name }}
+          prerelease: ${{ inputs.prerelease }}
+          generate_release_notes: true
+          files: |
+            image.img.part.*
+            image.img.parts.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
